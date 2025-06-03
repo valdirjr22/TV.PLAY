@@ -676,6 +676,10 @@
             { id: "rede-vida-religioso", name: "Rede Vida", category: "Canais Religiosos", streamUrl: "https://example.com/rede-vida-religioso" },
             { id: "tv-aparecida-religioso", name: "TV Aparecida", category: "Canais Religiosos", streamUrl: "https://example.com/tv-aparecida-religioso" },
             { id: "canal-cancao-nova", name: "Canal Canção Nova", category: "Canais Religiosos", streamUrl: "https://example.com/canal-cancao-nova" },
+            // Nova categoria e filme adicionados
+            { id: "commando-3", name: "Commando 3", category: "Filmes Ação", streamUrl: "https://youtu.be/R64l6zbebzM" },
+            { id: "os-mercenarios-2", name: "Os Mercenários 2", category: "Filmes Ação", streamUrl: "https://youtu.be/SBoODpO-DT0" },
+            { id: "elite-espiao-em-perigo-cacada-mortal", name: "Elite Espião em Perigo: Caçada Mortal", category: "Filmes Ação", streamUrl: "https://youtu.be/yP13SQp7D94" },
         ];
 
         const uniqueCategories = [...new Set(channelsData.map(channel => channel.category))].sort();
@@ -1525,8 +1529,8 @@
             if (target.classList.contains('watch-button')) {
                 const streamUrl = target.dataset.streamUrl;
                 if (streamUrl) {
-                    alert(`Simulando reprodução de: ${streamUrl}\n(Este é um URL de demonstração, o vídeo real não será reproduzido.)`);
-                    // window.open(streamUrl, '_blank'); // Para abrir o link real em uma nova aba
+                    // Abre a URL em uma nova aba
+                    window.open(streamUrl, '_blank');
                 } else {
                     alert('URL de stream não disponível para este canal.');
                 }
@@ -1595,9 +1599,12 @@
             channels: [
                 channelsData.find(c => c.id === "globo-hd"),
                 channelsData.find(c => c.id === "espn"),
-                channelsData.find(c => c.id === "discovery-kids")
+                channelsData.find(c => c.id === "discovery-kids"),
+                channelsData.find(c => c.id === "commando-3"), // Adicionado o filme Commando 3 ao usuário de demonstração
+                channelsData.find(c => c.id === "os-mercenarios-2"), // Adicionado o filme Os Mercenários 2 ao usuário de demonstração
+                channelsData.find(c => c.id === "elite-espiao-em-perigo-cacada-mortal") // Adicionado o filme Elite Espião em Perigo ao usuário de demonstração
             ].filter(Boolean), // Filter out any undefined if channel not found
-            categories: ["Canais HD", "Canais Esportivos", "Canais Infantis"],
+            categories: ["Canais HD", "Canais Esportivos", "Canais Infantis", "Filmes Ação"], // Adicionada a categoria "Filmes Ação"
             credits: 5, // Demo user with 5 credits
             expiryDate: calculateExpiryDate(5), // Calculate based on credits
             createdAt: new Date(),
