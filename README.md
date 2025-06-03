@@ -528,13 +528,32 @@
     </div>
 
     <script type="module">
-        // Variáveis globais (simulação de dados, não persistente)
-        const createdUsers = new Map(); // Map(username -> { password, channels, categories, expiryDate, createdAt, credits })
-        let messageTimeout;
-        let loggedInUser = null; // Para armazenar o usuário atualmente logado
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Dados dos canais (centralizado para facilitar a gestão)
-        const channelsData = [
+        // Global Firebase variables (provided by Canvas environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        let currentUserId = null; // To store the authenticated user's UID or a random ID for anonymous
+        let isAuthReady = false; // Flag to indicate if auth state has been determined
+
+        let channelsData = []; // Now will be populated from Firestore
+        let createdUsers = new Map(); // Now will be populated from Firestore
+        let uniqueCategories = []; // Now will be populated from Firestore
+
+        // Credenciais do administrador (HARDCODED PARA DEMONSTRAÇÃO - NÃO USAR EM PRODUÇÃO)
+        const ADMIN_USERNAME = "administrador";
+        const ADMIN_PASSWORD = "123456";
+
+        const initialHardcodedChannels = [
             // Canais SD
             { id: "globo-sd", name: "Rede Globo", category: "Canais SD", streamUrl: "https://example.com/globo-sd" },
             { id: "record-sd", name: "Rede Record", category: "Canais SD", streamUrl: "https://example.com/record-sd" },
@@ -676,13 +695,16 @@
             { id: "rede-vida-religioso", name: "Rede Vida", category: "Canais Religiosos", streamUrl: "https://example.com/rede-vida-religioso" },
             { id: "tv-aparecida-religioso", name: "TV Aparecida", category: "Canais Religiosos", streamUrl: "https://example.com/tv-aparecida-religioso" },
             { id: "canal-cancao-nova", name: "Canal Canção Nova", category: "Canais Religiosos", streamUrl: "https://example.com/canal-cancao-nova" },
-            // Nova categoria e filme adicionados
+            // Filmes de Ação
             { id: "commando-3", name: "Commando 3", category: "Filmes Ação", streamUrl: "https://youtu.be/R64l6zbebzM" },
             { id: "os-mercenarios-2", name: "Os Mercenários 2", category: "Filmes Ação", streamUrl: "https://youtu.be/SBoODpO-DT0" },
             { id: "elite-espiao-em-perigo-cacada-mortal", name: "Elite Espião em Perigo: Caçada Mortal", category: "Filmes Ação", streamUrl: "https://youtu.be/yP13SQp7D94" },
         ];
 
-        const uniqueCategories = [...new Set(channelsData.map(channel => channel.category))].sort();
+
+        // Variáveis globais (simulação de dados, não persistente)
+        let messageTimeout;
+        let loggedInUser = null; // Para armazenar o usuário atualmente logado
 
         // Elementos da UI
         const initialSelectionSection = document.getElementById('initialSelectionSection');
@@ -743,10 +765,6 @@
         const modalConfirmBtn = document.getElementById('modalConfirmBtn');
         const modalCancelBtn = document.getElementById('modalCancelBtn');
 
-        // Credenciais do administrador (HARDCODED PARA DEMONSTRAÇÃO - NÃO USAR EM PRODUÇÃO)
-        const ADMIN_USERNAME = "admtv";
-        const ADMIN_PASSWORD = "123456";
-
         let editingUser = null;
         let resolveModalPromise = null; // Para controlar a promessa do modal de confirmação
 
@@ -795,7 +813,7 @@
         function showAdminPanel() {
             hideAllSections();
             adminPanelSection.classList.remove('hidden-section');
-            userIdDisplay.textContent = 'Modo de Demonstração (Admin)';
+            userIdDisplay.textContent = `UID: ${currentUserId}`;
             populateCategoryDropdowns();
             renderExistingChannels();
             renderUsersTable();
@@ -853,7 +871,6 @@
                     dropdown.appendChild(defaultOption);
                 }
 
-
                 uniqueCategories.forEach(category => {
                     const option = document.createElement('option');
                     option.value = category;
@@ -910,18 +927,14 @@
             const newChannelId = `${channelName.toLowerCase().replace(/\s/g, '-')}-${channelCategory.toLowerCase().replace(/\s/g, '-')}-${Date.now()}`;
             const newChannel = { id: newChannelId, name: channelName, category: channelCategory, streamUrl: `https://example.com/${newChannelId}` };
 
-            channelsData.push(newChannel);
-            const tempUniqueCategories = [...new Set(channelsData.map(channel => channel.category))].sort();
-            uniqueCategories.splice(0, uniqueCategories.length, ...tempUniqueCategories);
-
-            showMessage(channelMessage, `Canal '${channelName}' (${channelCategory}) adicionado com sucesso (apenas demonstração)!`, "success");
-            addChannelForm.reset();
-            renderExistingChannels();
-            populateCategoryDropdowns();
-
-            const selectedManualCategories = Array.from(manualSelectCategory.selectedOptions).map(opt => opt.value);
-            populateChannelsDropdown(selectedManualCategories, manualSelectChannel);
-            populateChannelsDropdown(genSelectCategory.value, selectChannel);
+            try {
+                await setDoc(doc(db, `artifacts/${appId}/public/data/channels`, newChannel.id), newChannel);
+                showMessage(channelMessage, `Canal '${channelName}' (${channelCategory}) adicionado com sucesso!`, "success");
+                addChannelForm.reset();
+            } catch (e) {
+                console.error("Error adding channel: ", e);
+                showMessage(channelMessage, "Erro ao adicionar canal. Tente novamente.", "error", 5000);
+            }
         }
 
         // --- Funções de Geração e Gestão de Utilizadores ---
@@ -975,30 +988,43 @@
                 return;
             }
 
+            // Corrected variable name here
             const messageElement = isManual ? manualUserMessage : userGenMessage;
 
-            showMessage(messageElement, `Utilizador '${userData.username}' adicionado com sucesso (apenas demonstração)!`, "success");
+            try {
+                // Ensure createdAt is a Date object before using it
+                if (!(userData.createdAt instanceof Date)) {
+                    userData.createdAt = new Date();
+                }
 
-            userData.id = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            userData.createdAt = new Date();
+                // Store only channel IDs in the user object
+                const userToSave = {
+                    ...userData,
+                    channels: userData.channels.map(c => c.id), // Store only IDs
+                    expiryDate: userData.expiryDate.toISOString(), // expiryDate is always a Date from calculateExpiryDate
+                    createdAt: userData.createdAt.toISOString(), // Now createdAt is guaranteed to be a Date
+                };
+                await setDoc(doc(db, `artifacts/${appId}/public/data/users`, userData.username), userToSave);
+                showMessage(messageElement, `Utilizador '${userData.username}' adicionado com sucesso!`, "success");
 
-            createdUsers.set(userData.username, userData);
-
-            if (!isManual) {
-                generatedCredentials.classList.remove('hidden');
-                displayUsername.textContent = userData.username;
-                displayPassword.textContent = userData.password;
-                displayExpiryDate.textContent = new Date(userData.expiryDate).toLocaleDateString('pt-BR');
-            } else {
-                addManualUserForm.reset();
-                manualSelectChannel.innerHTML = '<option value="">Selecione uma categoria primeiro</option>';
-                manualSelectChannel.disabled = true;
-                Array.from(manualSelectCategory.options).forEach(option => {
-                    option.selected = false;
-                });
-                manualCreditsInput.value = 1; // Reset credits to default
+                if (!isManual) {
+                    generatedCredentials.classList.remove('hidden');
+                    displayUsername.textContent = userData.username;
+                    displayPassword.textContent = userData.password;
+                    displayExpiryDate.textContent = new Date(userData.expiryDate).toLocaleDateString('pt-BR');
+                } else {
+                    addManualUserForm.reset();
+                    manualSelectChannel.innerHTML = '<option value="">Selecione uma categoria primeiro</option>';
+                    manualSelectChannel.disabled = true;
+                    Array.from(manualSelectCategory.options).forEach(option => {
+                        option.selected = false;
+                    });
+                    manualCreditsInput.value = 1; // Reset credits to default
+                }
+            } catch (e) {
+                console.error("Error adding user: ", e);
+                showMessage(messageElement, "Erro ao adicionar utilizador. Tente novamente.", "error", 5000);
             }
-            renderUsersTable();
         }
 
         function populateChannelsDropdown(selectedCategories, targetSelectElement) {
@@ -1064,8 +1090,10 @@
                 let channelCategoriesDisplay = 'N/A';
 
                 if (Array.isArray(user.channels) && user.channels.length > 0) {
-                    channelNames = user.channels.map(c => c.name).join(', ');
-                    channelCategoriesDisplay = user.categories.map(cat => cat.replace('Canais ', '')).join(', ');
+                    // Map channel IDs back to names for display
+                    const fullChannels = user.channels.map(channelId => channelsData.find(c => c.id === channelId)).filter(Boolean);
+                    channelNames = fullChannels.map(c => c.name).join(', ');
+                    channelCategoriesDisplay = [...new Set(fullChannels.map(c => c.category))].map(cat => cat.replace('Canais ', '')).join(', ');
                 }
 
                 const expiryDateStr = user.expiryDate ? new Date(user.expiryDate).toLocaleDateString('pt-BR') : 'N/A';
@@ -1158,7 +1186,7 @@
             // Seleciona os canais que o usuário já possuía
             if (user.channels && Array.isArray(user.channels)) {
                 Array.from(editChannelsSelect.options).forEach(option => {
-                    if (user.channels.some(c => c.id === option.value)) {
+                    if (user.channels.includes(option.value)) { // Check against channel IDs
                         option.selected = true;
                     }
                 });
@@ -1171,7 +1199,7 @@
                 // Após repopular, tente re-selecionar os canais que eram do usuário e ainda estão disponíveis
                 if (editingUser && editingUser.channels) {
                      Array.from(editChannelsSelect.options).forEach(option => {
-                        if (editingUser.channels.some(c => c.id === option.value)) {
+                        if (editingUser.channels.includes(option.value)) { // Check against channel IDs
                             option.selected = true;
                         }
                     });
@@ -1186,7 +1214,7 @@
             `;
         }
 
-        function saveEdit(originalUsername) {
+        async function saveEdit(originalUsername) {
             const user = createdUsers.get(originalUsername);
             if (!user) {
                 showMessage(userGenMessage, "Erro: Usuário original não encontrado para salvar.", "error");
@@ -1220,9 +1248,7 @@
             const newUsername = newUsernameInput.value.trim();
             const newPassword = newPasswordInput.value.trim();
             const newSelectedCategories = Array.from(newCategoriesSelect.selectedOptions).map(opt => opt.value);
-            const newSelectedChannels = Array.from(newChannelsSelect.selectedOptions).map(opt => {
-                return channelsData.find(c => c.id === opt.value);
-            }).filter(Boolean); // Filter out any undefined if channel not found
+            const newSelectedChannelsIds = Array.from(newChannelsSelect.selectedOptions).map(opt => opt.value); // Store only IDs
 
             const newCredits = parseInt(newCreditsInput.value, 10); // Obter o valor dos créditos
 
@@ -1235,7 +1261,7 @@
                 showMessage(userGenMessage, `Erro na senha: ${passwordError}`, "error");
                 return;
             }
-            if (newSelectedChannels.length === 0) {
+            if (newSelectedChannelsIds.length === 0) {
                 showMessage(userGenMessage, "Por favor, selecione pelo menos um canal.", "error");
                 return;
             }
@@ -1249,23 +1275,31 @@
                 return;
             }
 
-            // Atualiza os dados no Map
-            if (newUsername !== originalUsername) {
-                createdUsers.delete(originalUsername);
+            try {
+                // If username changed, delete old document and create new one
+                if (newUsername !== originalUsername) {
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/users`, originalUsername));
+                }
+
+                const updatedUser = {
+                    ...user,
+                    username: newUsername,
+                    password: newPassword,
+                    channels: newSelectedChannelsIds, // Store IDs
+                    categories: newSelectedCategories,
+                    credits: newCredits,
+                    expiryDate: calculateExpiryDate(newCredits).toISOString(), // Recalculate and store as ISO string
+                    createdAt: new Date(user.createdAt || new Date()).toISOString(), // Ensure createdAt is a Date object or new Date before toISOString
+                };
+
+                await setDoc(doc(db, `artifacts/${appId}/public/data/users`, newUsername), updatedUser);
+
+                editingUser = null; // Reseta o estado de edição
+                showMessage(userGenMessage, `Usuário '${newUsername}' atualizado com sucesso!`, "success");
+            } catch (e) {
+                console.error("Error saving user: ", e);
+                showMessage(userGenMessage, "Erro ao salvar utilizador. Tente novamente.", "error", 5000);
             }
-
-            user.username = newUsername;
-            user.password = newPassword;
-            user.channels = newSelectedChannels;
-            user.categories = newSelectedCategories;
-            user.credits = newCredits; // Salva os novos créditos
-            user.expiryDate = calculateExpiryDate(newCredits); // Recalcula a expiração
-
-            createdUsers.set(newUsername, user);
-
-            editingUser = null; // Reseta o estado de edição
-            renderUsersTable(); // Renderiza a tabela novamente para refletir as mudanças
-            showMessage(userGenMessage, `Usuário '${newUsername}' atualizado com sucesso!`, "success");
         }
 
         function cancelEdit() {
@@ -1297,11 +1331,12 @@
             const confirmed = await showConfirmationModal(`Tem certeza que deseja apagar o utilizador '${usernameToDelete}'?`);
 
             if (confirmed) {
-                if (createdUsers.delete(usernameToDelete)) {
+                try {
+                    await deleteDoc(doc(db, `artifacts/${appId}/public/data/users`, usernameToDelete));
                     showMessage(userGenMessage, `Utilizador '${usernameToDelete}' apagado com sucesso!`, "success");
-                    renderUsersTable();
-                } else {
-                    showMessage(userGenMessage, `Erro: Utilizador '${usernameToDelete}' não encontrado.`, "error");
+                } catch (e) {
+                    console.error("Error deleting user: ", e);
+                    showMessage(userGenMessage, `Erro: Não foi possível apagar o utilizador '${usernameToDelete}'.`, "error");
                 }
             } else {
                 showMessage(userGenMessage, `Exclusão do utilizador '${usernameToDelete}' cancelada.`, "info");
@@ -1334,16 +1369,19 @@
                 return;
             }
 
-            user.channels.forEach(channel => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${channel.name}</td>
-                    <td>${channel.category.replace('Canais ', '')}</td>
-                    <td>
-                        <button class="watch-button btn-info py-1 px-3 text-sm" data-stream-url="${channel.streamUrl}">Assistir</button>
-                    </td>
-                `;
-                userChannelsTableBody.appendChild(row);
+            user.channels.forEach(channelId => { // user.channels now contains IDs
+                const channel = channelsData.find(c => c.id === channelId);
+                if (channel) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${channel.name}</td>
+                        <td>${channel.category.replace('Canais ', '')}</td>
+                        <td>
+                            <button class="watch-button btn-info py-1 px-3 text-sm" data-stream-url="${channel.streamUrl}">Assistir</button>
+                        </td>
+                    `;
+                    userChannelsTableBody.appendChild(row);
+                }
             });
         }
 
@@ -1445,7 +1483,7 @@
             const userData = {
                 username: username,
                 password: password,
-                channels: [{ id: selectedChannel.id, name: selectedChannel.name, category: selectedChannel.category, streamUrl: selectedChannel.streamUrl }],
+                channels: [selectedChannel], // Pass full channel object for now, it will be mapped to ID in addUser
                 categories: [selectedChannel.category],
                 expiryDate: expiryDate,
                 credits: credits, // Store credits
@@ -1569,47 +1607,112 @@
 
         userLogoutButton.addEventListener('click', userLogout);
 
-        // Verificar estado de login ao carregar a página
-        window.onload = () => {
-            if (sessionStorage.getItem('isAdminLoggedIn') === 'true') {
-                showAdminPanel();
-            } else if (sessionStorage.getItem('loggedInUserUsername')) {
-                const username = sessionStorage.getItem('loggedInUserUsername');
-                const user = createdUsers.get(username);
-                if (user) {
-                    loggedInUser = user;
-                    showUserChannelsPanel(user);
-                } else {
-                    // Usuário logado mas não encontrado no mapa (recarregou a página sem dados persistentes)
-                    // Voltar para seleção inicial
-                    showInitialSelection();
+        // Firebase Auth State Listener and Initial Data Loading
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                currentUserId = user.uid;
+                console.log("Authenticated with UID:", currentUserId);
+            } else {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        currentUserId = auth.currentUser.uid;
+                        console.log("Signed in with custom token:", currentUserId);
+                    } else {
+                        await signInAnonymously(auth);
+                        currentUserId = auth.currentUser.uid;
+                        console.log("Signed in anonymously with UID:", currentUserId);
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth Error:", error);
+                    currentUserId = crypto.randomUUID();
+                    console.log("Using random UUID as userId:", currentUserId);
                 }
             }
-            else {
-                showInitialSelection();
-            }
-        };
+            isAuthReady = true;
+            loadInitialData();
+        });
 
-        // Adiciona um usuário de demonstração para facilitar o teste da interface de usuário
-        // Isso simula um usuário pré-existente
-        const demoUser = {
-            id: "demo-user-123",
-            username: "demouser",
-            password: "demopass",
-            channels: [
-                channelsData.find(c => c.id === "globo-hd"),
-                channelsData.find(c => c.id === "espn"),
-                channelsData.find(c => c.id === "discovery-kids"),
-                channelsData.find(c => c.id === "commando-3"), // Adicionado o filme Commando 3 ao usuário de demonstração
-                channelsData.find(c => c.id === "os-mercenarios-2"), // Adicionado o filme Os Mercenários 2 ao usuário de demonstração
-                channelsData.find(c => c.id === "elite-espiao-em-perigo-cacada-mortal") // Adicionado o filme Elite Espião em Perigo ao usuário de demonstração
-            ].filter(Boolean), // Filter out any undefined if channel not found
-            categories: ["Canais HD", "Canais Esportivos", "Canais Infantis", "Filmes Ação"], // Adicionada a categoria "Filmes Ação"
-            credits: 5, // Demo user with 5 credits
-            expiryDate: calculateExpiryDate(5), // Calculate based on credits
-            createdAt: new Date(),
-        };
-        createdUsers.set(demoUser.username, demoUser);
+        async function loadInitialData() {
+            if (!isAuthReady) {
+                console.warn("Auth not ready, cannot load data.");
+                return;
+            }
+
+            // Load channels
+            onSnapshot(collection(db, `artifacts/${appId}/public/data/channels`), async (snapshot) => {
+                channelsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                console.log("Channels loaded:", channelsData);
+                uniqueCategories = [...new Set(channelsData.map(channel => channel.category))].sort(); // Update uniqueCategories
+                populateCategoryDropdowns();
+                renderExistingChannels();
+                if (loggedInUser) {
+                    renderUserChannels(loggedInUser);
+                }
+
+                // If channels collection is empty, populate with initial hardcoded data
+                if (channelsData.length === 0) {
+                    console.log("No channels found in Firestore, populating initial channels.");
+                    for (const channel of initialHardcodedChannels) {
+                        await setDoc(doc(db, `artifacts/${appId}/public/data/channels`, channel.id), channel);
+                    }
+                }
+            }, (error) => {
+                console.error("Error fetching channels:", error);
+            });
+
+            // Load users
+            onSnapshot(collection(db, `artifacts/${appId}/public/data/users`), async (snapshot) => {
+                createdUsers.clear();
+                snapshot.docs.forEach(doc => {
+                    const userData = doc.data();
+                    createdUsers.set(userData.username, { id: doc.id, ...userData });
+                });
+                console.log("Users loaded:", createdUsers);
+                renderUsersTable();
+
+                // Check if a user was previously logged in and try to re-show their panel
+                const storedUsername = sessionStorage.getItem('loggedInUserUsername');
+                if (storedUsername && createdUsers.has(storedUsername) && !loggedInUser) {
+                    loggedInUser = createdUsers.get(storedUsername);
+                    showUserChannelsPanel(loggedInUser);
+                } else if (sessionStorage.getItem('isAdminLoggedIn') === 'true' && !loggedInUser) {
+                    showAdminPanel();
+                } else if (!loggedInUser && !sessionStorage.getItem('isAdminLoggedIn')) {
+                     showInitialSelection();
+                }
+
+                // Add demo user to Firestore if not exists
+                if (createdUsers.size === 0 && channelsData.length > 0) { // Only add if channels are also loaded
+                    console.log("No users found, adding demo user.");
+                    const demoUser = {
+                        id: "demo-user-123",
+                        username: "demouser",
+                        password: "demopass",
+                        channels: [
+                            channelsData.find(c => c.id === "globo-hd")?.id,
+                            channelsData.find(c => c.id === "espn")?.id,
+                            channelsData.find(c => c.id === "discovery-kids")?.id,
+                            channelsData.find(c => c.id === "commando-3")?.id,
+                            channelsData.find(c => c.id === "os-mercenarios-2")?.id,
+                            channelsData.find(c => c.id === "elite-espiao-em-perigo-cacada-mortal")?.id
+                        ].filter(Boolean),
+                        categories: ["Canais HD", "Canais Esportivos", "Canais Infantis", "Filmes Ação"],
+                        credits: 5,
+                        expiryDate: calculateExpiryDate(5).toISOString(),
+                        createdAt: new Date().toISOString(),
+                    };
+                    const demoUserDocRef = doc(db, `artifacts/${appId}/public/data/users`, demoUser.username);
+                    const demoUserDocSnap = await getDoc(demoUserDocRef);
+                    if (!demoUserDocSnap.exists()) {
+                        await setDoc(demoUserDocRef, demoUser);
+                        console.log("Demo user added to Firestore.");
+                    }
+                }
+            }, (error) => {
+                console.error("Error fetching users:", error);
+            });
+        }
     </script>
 </body>
 </html>
